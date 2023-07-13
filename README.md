@@ -6,7 +6,7 @@ An HTML parsing library for Node.js, designed to extract text sections associate
 
 - ✅ Extracts text from HTML files in a folder (and it's sub-folders)
 - ✅ Available as a simple API
-- ✅ Just `136 byte` nano sized (ESM, gizpped)
+- ✅ Just `624 byte` nano sized (ESM, gizpped)
 - ✅ Tree-shakable and side-effect free
 - ✅ First class TypeScript support
 - ✅ 100% Unit Test coverage
