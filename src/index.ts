@@ -1,50 +1,45 @@
-import * as fs from 'node:fs'
+import * as fs from 'fs/promises'
 import * as path from 'node:path'
 import { parseFragment } from 'parse5'
 import * as htmlparser2Adapter from 'parse5-htmlparser2-tree-adapter'
 
 export interface HtmlSection {
   url: string
+  href: string
   anchor?: string
   title?: string
   text: string
 }
 
-export function readHtmlFile(filepath: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    fs.readFile(filepath, 'utf8', (err, data) => {
-      if (err) {
-        reject(err)
-      } else {
-        resolve(data)
-      }
-    })
-  })
+export async function readHtmlFile(filepath: string): Promise<string> {
+  return fs.readFile(filepath, 'utf8')
 }
-
-export function getHtmlFiles(dirPath: string, arrayOfFiles: string[] = []): string[] {
-  const files = fs.readdirSync(dirPath)
-
-  files.forEach((file) => {
-    if (fs.statSync(path.join(dirPath, file)).isDirectory()) {
-      arrayOfFiles = getHtmlFiles(path.join(dirPath, file), arrayOfFiles)
-    } else {
-      if (path.extname(file) === '.html') {
-        arrayOfFiles.push(path.join(dirPath, file))
-      }
-    }
-  })
-
-  return arrayOfFiles
+export async function getHtmlFiles(dirPath: string): Promise<string[]> {
+  let dirs = [dirPath]
+  let htmlFiles = []
+  while (dirs.length > 0) {
+    const newDirs = []
+    await Promise.all(
+      dirs.map(async (dir) => {
+        const entries = await fs.readdir(dir, { withFileTypes: true })
+        for (const entry of entries) {
+          const res = path.resolve(dir, entry.name)
+          if (entry.isDirectory()) {
+            newDirs.push(res)
+          } else if (path.extname(entry.name) === '.html') {
+            htmlFiles.push(res)
+          }
+        }
+      }),
+    )
+    dirs = newDirs
+  }
+  return htmlFiles
 }
 
 export function removeWhitespaceOnlyLines(input: string): string {
-  const lines = input.split('\n')
-  const filteredLines = lines.filter((line) => line.trim() !== '')
-  return filteredLines.join('\n')
+  return input.replace(/^\s*[\r\n]/gm, '')
 }
-
-let processChildren = false
 
 export const DEFAULT_IGNORED_TAGS = [
   'script',
@@ -60,8 +55,8 @@ export const DEFAULT_IGNORED_TAGS = [
   'label',
   'option',
 ]
-
 export function parseHtml(html: string, url: string, ignoreTags: Array<string>): HtmlSection[] {
+  const ignoreTagsSet = new Set(ignoreTags)
   const document = parseFragment(html, { treeAdapter: htmlparser2Adapter.adapter })
   let currentAnchor = ''
   let currentTitle = ''
@@ -69,18 +64,19 @@ export function parseHtml(html: string, url: string, ignoreTags: Array<string>):
   let sections: Array<HtmlSection> = []
   let waitingForTitle = false
 
-  function traverse(node: any) {
+  function traverse(node: any, processChildren: boolean) {
     const tagName = node.tagName
+    const attribs = node.attribs
 
-    if (ignoreTags.includes(tagName)) {
+    if (ignoreTagsSet.has(tagName)) {
       return
     }
 
-    if (node.attribs && node.attribs['data-pagefind-body'] !== undefined) {
+    if (attribs && attribs['data-pagefind-body'] !== undefined) {
       processChildren = true
     }
 
-    if (node.attribs && node.attribs['data-pagefind-ignore'] !== undefined) {
+    if (attribs && attribs['data-pagefind-ignore'] !== undefined) {
       processChildren = false
     }
 
@@ -90,74 +86,81 @@ export function parseHtml(html: string, url: string, ignoreTags: Array<string>):
     }
 
     // link points to an anchor in the same document
-    const selfReferencingAnchor = node.attribs && node.attribs.href && node.attribs.href.startsWith('#')
+    const selfReferencingAnchor = attribs && attribs.href && attribs.href.startsWith('#')
 
     if (processChildren && !selfReferencingAnchor) {
       let isCurrentAnchor = false
       if (tagName === 'a' && !selfReferencingAnchor) {
-        const name = node.attribs && node.attribs.name
+        const name = attribs && attribs.name
 
         if (name) {
           if (currentText.trim() !== '') {
             sections.push({
+              href: `${url}${`${currentAnchor ? '#' : ''}`}${currentAnchor}`,
               url: url,
               anchor: currentAnchor,
               title: currentTitle,
               text: currentText.trim(),
             })
+            currentText = ''
           }
-          currentAnchor = '#' + name
+          currentAnchor = name
           currentTitle = ''
-          currentText = ''
           waitingForTitle = true
           isCurrentAnchor = true
         }
       }
 
       if (waitingForTitle && tagName && tagName.startsWith('h')) {
-        currentTitle += removeWhitespaceOnlyLines(
-          ' ' + (node.children && node.children[0] && node.children[0].data ? node.children[0].data : ''),
-        ).trim()
-        waitingForTitle = false
+        const textData = node.children && node.children[0] && node.children[0].data
+        if (textData) {
+          currentTitle += removeWhitespaceOnlyLines(' ' + textData).trim()
+          waitingForTitle = false
+        }
       }
 
       if (!isCurrentAnchor) {
-        currentText += removeWhitespaceOnlyLines(
-          ' ' + (node.children && node.children[0] && node.children[0].data ? node.children[0].data : ''),
-        )
+        const textData = node.children && node.children[0] && node.children[0].data
+        if (textData) {
+          currentText += removeWhitespaceOnlyLines(' ' + textData)
+        }
       }
     }
 
     if (node.children) {
       for (const child of node.children) {
-        traverse(child)
+        traverse(child, processChildren)
       }
     }
   }
 
-  traverse(document)
+  traverse(document, true)
 
   if (currentText.trim() !== '') {
     sections.push({
+      href: `${url}${`${currentAnchor ? '#' : ''}`}${currentAnchor}`,
       url: url,
       anchor: currentAnchor,
       title: currentTitle.trim(),
       text: currentText.trim(),
     })
   }
-
   return sections
 }
 
 export async function extract(directory: string, ignoreTags = DEFAULT_IGNORED_TAGS): Promise<HtmlSection[]> {
-  const htmlFiles = getHtmlFiles(directory)
-  let allSections: Array<HtmlSection> = []
+  const htmlFiles = await getHtmlFiles(directory)
 
-  for (const htmlFile of htmlFiles) {
+  const promises = htmlFiles.map(async (htmlFile) => {
     const html = await readHtmlFile(htmlFile)
     const url = path.relative(directory, htmlFile)
-    const sections = parseHtml(html, url, ignoreTags)
-    allSections = [...allSections, ...sections]
-  }
+    return parseHtml(html, url, ignoreTags)
+  })
+
+  const sectionsArray = await Promise.all(promises)
+
+  // Flatten the array
+  const allSections = sectionsArray.flat()
+
   return allSections
 }

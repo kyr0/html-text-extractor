@@ -1,4 +1,4 @@
-import path from 'path'
+import path, { join } from 'path'
 import {
   removeWhitespaceOnlyLines,
   DEFAULT_IGNORED_TAGS,
@@ -9,6 +9,8 @@ import {
   readHtmlFile,
 } from '../dist/index.esm'
 import mockFs from 'mock-fs'
+import { resolve } from 'path'
+import { cwd } from 'process'
 
 describe('HTML Parser', () => {
   test('readHtmlFile throws error', async () => {
@@ -18,8 +20,13 @@ describe('HTML Parser', () => {
 
 describe('extract', () => {
   it('should extract sections from html files in directory', async () => {
+    console.time('extract')
     const sections = await extract('./test/dist')
-    expect(sections.length).toBe(70)
+    console.timeEnd('extract')
+
+    expect(sections.length).toBe(72)
+
+    console.log(sections.map((s) => `${s.url}: ${s.href}`))
   })
 })
 
@@ -47,9 +54,13 @@ describe('HTML Parser', () => {
     expect(content).toBe('<head><title>Title 1</title></head><h1>Title 1</h1>')
   })
 
-  test('getHtmlFiles', () => {
-    const files = getHtmlFiles('dir')
-    expect(files).toEqual(['dir/file1.html', 'dir/file2.html', 'dir/nested/file3.html'])
+  test('getHtmlFiles', async () => {
+    const files = await getHtmlFiles('dir')
+    expect(files).toEqual([
+      join(cwd(), 'dir/file1.html'),
+      join(cwd(), 'dir/file2.html'),
+      join(cwd(), 'dir/nested/file3.html'),
+    ])
   })
 
   test('removeWhitespaceOnlyLines', () => {
@@ -65,10 +76,11 @@ describe('HTML Parser', () => {
     const ignoreTags = DEFAULT_IGNORED_TAGS
     const parseResult = parseHtml(html, url, ignoreTags)
     const expected: HtmlSection[] = [
-      { url: 'url', anchor: '', title: 'Foo', text: 'Irrelevant text' },
+      { href: 'url', url: 'url', anchor: '', title: 'Foo', text: 'Irrelevant text' },
       {
+        href: 'url#anchor',
         url: 'url',
-        anchor: '#anchor',
+        anchor: 'anchor',
         title: 'Title',
         text: 'Title Some text',
       },
@@ -80,9 +92,15 @@ describe('HTML Parser', () => {
     const directory = 'dir'
     const ignoreTags = DEFAULT_IGNORED_TAGS
     const expected: HtmlSection[] = [
-      { url: 'file1.html', anchor: '', title: 'Title 1', text: 'Title 1' },
-      { url: 'file2.html', anchor: '', title: 'Title 2', text: 'Title 2' },
-      { url: path.join('nested', 'file3.html'), anchor: '', title: 'Title 3', text: 'Title 3' },
+      { href: 'file1.html', url: 'file1.html', anchor: '', title: 'Title 1', text: 'Title 1' },
+      { href: 'file2.html', url: 'file2.html', anchor: '', title: 'Title 2', text: 'Title 2' },
+      {
+        href: 'nested/file3.html',
+        url: path.join('nested', 'file3.html'),
+        anchor: '',
+        title: 'Title 3',
+        text: 'Title 3',
+      },
     ]
     const result = await extract(directory, ignoreTags)
     expect(result).toEqual(expected)
