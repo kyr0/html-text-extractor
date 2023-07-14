@@ -1,6 +1,7 @@
-import * as cheerio from 'cheerio'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { parseFragment } from 'parse5'
+import * as htmlparser2Adapter from 'parse5-htmlparser2-tree-adapter'
 
 export interface HtmlSection {
   url: string
@@ -37,31 +38,66 @@ export function getHtmlFiles(dirPath: string, arrayOfFiles: string[] = []): stri
   return arrayOfFiles
 }
 
-export function parseHtml(html: string, url: string): HtmlSection[] {
-  const $ = cheerio.load(html)
+export function removeWhitespaceOnlyLines(input: string): string {
+  const lines = input.split('\n')
+  const filteredLines = lines.filter((line) => line.trim() !== '')
+  return filteredLines.join('\n')
+}
+
+let processChildren = false
+
+export const DEFAULT_IGNORED_TAGS = [
+  'script',
+  'style',
+  'aside',
+  'footer',
+  'header',
+  'nav',
+  'select',
+  'input',
+  'textarea',
+  'button',
+  'label',
+  'option',
+]
+
+export function parseHtml(html: string, url: string, ignoreTags: Array<string>): HtmlSection[] {
+  const document = parseFragment(html, { treeAdapter: htmlparser2Adapter.adapter })
   let currentAnchor = ''
   let currentTitle = ''
   let currentText = ''
-  let sections: HtmlSection[] = []
+  let sections: Array<HtmlSection> = []
   let waitingForTitle = false
 
-  $('title').each(function () {
-    currentTitle = $(this).text()
-  })
+  function traverse(node: any) {
+    const tagName = node.tagName
 
-  $('body')
-    .find('*[data-pagefind-body] *, *[data-clientsearch-body] *')
-    .each(function () {
-      const tagName = this.tagName
+    if (ignoreTags.includes(tagName)) {
+      return
+    }
 
-      if (['script', 'style', 'aside', 'footer', 'header'].indexOf(tagName) >= 0) {
-        return
-      }
+    if (node.attribs && node.attribs['data-pagefind-body'] !== undefined) {
+      processChildren = true
+    }
 
-      if (tagName === 'a') {
-        const name = $(this).attr('name')
+    if (node.attribs && node.attribs['data-pagefind-ignore'] !== undefined) {
+      processChildren = false
+    }
+
+    if (tagName === 'title') {
+      currentTitle = (node.children[0] && node.children[0].data).trim()
+      return
+    }
+
+    // link points to an anchor in the same document
+    const selfReferencingAnchor = node.attribs && node.attribs.href && node.attribs.href.startsWith('#')
+
+    if (processChildren && !selfReferencingAnchor) {
+      let isCurrentAnchor = false
+      if (tagName === 'a' && !selfReferencingAnchor) {
+        const name = node.attribs && node.attribs.name
+
         if (name) {
-          // Flush current section and prepare for next
           if (currentText.trim() !== '') {
             sections.push({
               url: url,
@@ -74,23 +110,38 @@ export function parseHtml(html: string, url: string): HtmlSection[] {
           currentTitle = ''
           currentText = ''
           waitingForTitle = true
+          isCurrentAnchor = true
         }
       }
 
-      if (waitingForTitle && tagName.startsWith('h')) {
-        currentTitle += ' ' + $(this).text()
+      if (waitingForTitle && tagName && tagName.startsWith('h')) {
+        currentTitle += removeWhitespaceOnlyLines(
+          ' ' + (node.children && node.children[0] && node.children[0].data ? node.children[0].data : ''),
+        ).trim()
         waitingForTitle = false
       }
 
-      currentText += ' ' + $(this).text()
-    })
+      if (!isCurrentAnchor) {
+        currentText += removeWhitespaceOnlyLines(
+          ' ' + (node.children && node.children[0] && node.children[0].data ? node.children[0].data : ''),
+        )
+      }
+    }
 
-  // Flush last section
+    if (node.children) {
+      for (const child of node.children) {
+        traverse(child)
+      }
+    }
+  }
+
+  traverse(document)
+
   if (currentText.trim() !== '') {
     sections.push({
       url: url,
       anchor: currentAnchor,
-      title: currentTitle,
+      title: currentTitle.trim(),
       text: currentText.trim(),
     })
   }
@@ -98,16 +149,15 @@ export function parseHtml(html: string, url: string): HtmlSection[] {
   return sections
 }
 
-export async function extract(directory: string): Promise<HtmlSection[]> {
+export async function extract(directory: string, ignoreTags = DEFAULT_IGNORED_TAGS): Promise<HtmlSection[]> {
   const htmlFiles = getHtmlFiles(directory)
-  let allSections: HtmlSection[] = []
+  let allSections: Array<HtmlSection> = []
 
   for (const htmlFile of htmlFiles) {
     const html = await readHtmlFile(htmlFile)
     const url = path.relative(directory, htmlFile)
-    const sections = parseHtml(html, url)
+    const sections = parseHtml(html, url, ignoreTags)
     allSections = [...allSections, ...sections]
   }
-
   return allSections
 }
