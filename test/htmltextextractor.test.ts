@@ -9,7 +9,6 @@ import {
   readHtmlFile,
 } from '../dist/index.esm'
 import mockFs from 'mock-fs'
-import { resolve } from 'path'
 import { cwd } from 'process'
 
 describe('HTML Parser', () => {
@@ -21,7 +20,7 @@ describe('HTML Parser', () => {
 describe('extract', () => {
   it('should extract sections from html files in directory', async () => {
     console.time('extract')
-    const sections = await extract('./test/dist')
+    const sections = await extract('./test/out')
     console.timeEnd('extract')
 
     expect(sections.length).toBe(72)
